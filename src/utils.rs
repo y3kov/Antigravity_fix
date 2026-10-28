@@ -296,21 +296,6 @@ pub fn open_url_as_user(url: &str) {
     open_url(url);
 }
 
-/// The clipboard as text, or `None` if it holds none.
-///
-/// Through `arboard` rather than a hand-rolled `OpenClipboard`/`GetClipboardData`
-/// pair, and it costs nothing to do so: eframe's own clipboard support is
-/// `arboard`, so the crate is already linked into this binary — this only asks it
-/// a question eframe never exposes. egui hands a *paste* to the focused widget
-/// when the user presses Ctrl+V and offers no way to ask for one, which is why
-/// the right-click-to-paste on the licence field needs to read the clipboard
-/// itself.
-pub fn clipboard_text() -> Option<String> {
-    let mut cb = arboard::Clipboard::new().ok()?;
-    let text = cb.get_text().ok()?;
-    (!text.trim().is_empty()).then_some(text)
-}
-
 /// Puts `text` on the clipboard; false when there is no clipboard to reach (a
 /// Linux box with no X11 or Wayland session).
 pub fn set_clipboard_text(text: &str) -> bool {

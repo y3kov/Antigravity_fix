@@ -1255,7 +1255,8 @@ pub fn rows(usable: impl Fn(Kind) -> bool) -> Vec<Row> {
     let mut kinds: Vec<Kind> = order.clone();
     kinds.extend(ALL.iter().copied().filter(|k| !order.contains(k)));
     // A build without the relay has no such route at all - not an unusable one.
-    kinds.retain(|&k| k != Kind::Relay || cfg!(relay));
+    // The group proxy and the built-in exits are gone from this build the same way.
+    kinds.retain(|&k| (k != Kind::Relay || cfg!(relay)) && k != Kind::Group && k != Kind::Exits);
     kinds
         .into_iter()
         .map(|k| {
@@ -1881,27 +1882,27 @@ mod tests {
     fn a_protected_refusal_does_not_cost_the_route_its_place() {
         let _turn = turn();
         set_context(0x7601);
-        let usable = |k: Kind| matches!(k, Kind::Exits | Kind::Relay);
-        credit(Kind::Exits);
+        let usable = |k: Kind| matches!(k, Kind::Direct | Kind::Relay);
+        credit(Kind::Direct);
         record(Kind::Relay, ms(50));
-        assert_eq!(order(usable).first(), Some(&Kind::Exits));
+        assert_eq!(order(usable).first(), Some(&Kind::Direct));
 
         // A refusal inside `PROOF_PROTECTS_FOR`: not evidence (D31).
-        assert!(matches!(blame(Kind::Exits), Blamed::Proven(_)));
+        assert!(matches!(blame(Kind::Direct), Blamed::Proven(_)));
         assert!(
-            is_proven(Kind::Exits),
+            is_proven(Kind::Direct),
             "a refusal that was not held against the route must not unprove it"
         );
         assert_eq!(
             order(usable).first(),
-            Some(&Kind::Exits),
+            Some(&Kind::Direct),
             "the route that answered must still be the one offered first"
         );
 
         // The user is still told it happened - that half was never the bug.
         let row = rows(usable)
             .into_iter()
-            .find(|r| r.label == Kind::Exits.label())
+            .find(|r| r.label == Kind::Direct.label())
             .expect("a row for the route");
         assert!(row.refused_ago.is_some(), "the report must still show it");
         assert_eq!((row.answers, row.refusals), (1, 1));

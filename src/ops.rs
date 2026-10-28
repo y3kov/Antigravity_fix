@@ -53,9 +53,6 @@ pub enum Cap {
     LocalProxy,
     /// The user's own HTTP proxy.
     OwnProxy,
-    /// The built-in permitted-region exits.
-    BuiltinExits,
-    GroupProxy,
     /// Whether the DNS pool rotates, or only its first enabled member answers.
     DnsRotation,
     // `VpnDetect` is gone (D25): the layer no longer stands down for a tunnel,
@@ -78,8 +75,6 @@ impl Cap {
             Cap::Dns => "Обход через DNS",
             Cap::LocalProxy => "Локальный прокси",
             Cap::OwnProxy => "Свой HTTP-прокси",
-            Cap::BuiltinExits => "Встроенные выходы",
-            Cap::GroupProxy => "Прокси из группы",
             Cap::DnsRotation => "Ротация DNS-серверов",
         }
     }
@@ -195,8 +190,6 @@ pub struct Status {
     pub dns: State,
     pub local_proxy: State,
     pub own_proxy: State,
-    pub builtin_exits: State,
-    pub group_proxy: State,
     pub dns_rotation: State,
     /// What the last measurement saw. `None` means it has not been taken yet;
     /// taking it spawns PowerShell, so it is not done on every refresh.
@@ -232,8 +225,6 @@ impl Status {
             Cap::Dns => &self.dns,
             Cap::LocalProxy => &self.local_proxy,
             Cap::OwnProxy => &self.own_proxy,
-            Cap::BuiltinExits => &self.builtin_exits,
-            Cap::GroupProxy => &self.group_proxy,
             Cap::DnsRotation => &self.dns_rotation,
         }
     }
@@ -241,11 +232,7 @@ impl Status {
     /// The bypass master switch. Derived, never stored: it is on when any part
     /// of the bypass is, which keeps one truth instead of two.
     pub fn bypass_on(&self) -> bool {
-        self.dns.is_on()
-            || self.local_proxy.is_on()
-            || self.builtin_exits.is_on()
-            || self.group_proxy.is_on()
-            || self.own_proxy.is_on()
+        self.dns.is_on() || self.local_proxy.is_on() || self.own_proxy.is_on()
     }
 }
 
@@ -258,20 +245,9 @@ impl Status {
 pub fn bypass_order(on: bool) -> Vec<Cap> {
     if on {
         // The user's own proxy is theirs to switch on: it needs an address.
-        vec![
-            Cap::Dns,
-            Cap::LocalProxy,
-            Cap::BuiltinExits,
-            Cap::GroupProxy,
-        ]
+        vec![Cap::Dns, Cap::LocalProxy]
     } else {
-        vec![
-            Cap::LocalProxy,
-            Cap::OwnProxy,
-            Cap::BuiltinExits,
-            Cap::GroupProxy,
-            Cap::Dns,
-        ]
+        vec![Cap::LocalProxy, Cap::OwnProxy, Cap::Dns]
     }
 }
 
@@ -295,12 +271,9 @@ pub enum Event {
 
 /// UI → worker.
 pub enum Cmd {
-    /// The key was accepted and the main screen is up. Auto-patch may act from
-    /// here on, never before: the first scan runs under the licence screen, and
-    /// patching from there would hand the patch to anyone without a key.
+    /// The main screen is up. Auto-patch acts from here on: the window is where
+    /// it says what it did.
     Unlocked,
-    /// Store the licence key just accepted, so the next start skips the screen.
-    RememberLicense(String),
     /// Ask the system again where the client's traffic leaves.
     ///
     /// Its own command because it is the one measurement that goes stale on its
@@ -330,7 +303,6 @@ pub enum Cmd {
     ForgetPath(PathBuf),
     SetOwnProxy(String),
     SetCustomDns(String),
-    SetGroupKey(String),
     SetProvider(String, bool),
     /// The whole pool in the order the user dragged it into.
     ReorderProviders(Vec<String>),
@@ -473,23 +445,15 @@ fn run_worker(
     settle_decline(&mut ctx);
     startup_housekeeping(&mut ctx);
 
-    // The first snapshot is deep: the window opens on the licence screen, so
-    // reading the binaries costs the user nothing here and the main screen is
-    // already truthful when it appears.
+    // The first snapshot is deep, so the install rows say patched or not from
+    // the start.
     push_status(&mut ctx, Scan::Deep);
 
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Cmd::Stop => return,
-            Cmd::RememberLicense(key) => {
-                if ctx.settings.license_key != key {
-                    ctx.settings.license_key = key;
-                    ctx.settings.save();
-                }
-            }
             Cmd::Unlocked => {
-                // The first snapshot was taken while the licence screen was up;
-                // a fresh one either way, deep when auto-patch just wrote.
+                // A fresh snapshot either way, deep when auto-patch just wrote.
                 if auto_patch_found(&mut ctx) {
                     push_status(&mut ctx, Scan::Deep);
                 } else {
@@ -592,24 +556,6 @@ fn run_worker(
                 set_custom_dns(&mut ctx, &text);
                 ctx.settings.save();
                 push_status(&mut ctx, Scan::Settings);
-            }
-            Cmd::SetGroupKey(text) => {
-                ctx.busy(Some("Проверка ключа"));
-                match crate::group_key::parse_key(&text) {
-                    Ok(_) => {
-                        ctx.settings.group_key = text.trim().to_string();
-                        ctx.settings.group_key_at = crate::gate::now_unix();
-                        ctx.settings.group_proxy = true;
-                        ctx.settings.save();
-                        apply(&mut ctx, Cap::GroupProxy, true);
-                        ctx.log(crate::ops::Level::Ok, "Ключ принят.");
-                        push_status(&mut ctx, scan_after(Cap::GroupProxy));
-                    }
-                    Err(e) => {
-                        ctx.log(crate::ops::Level::Err, format!("{}", e));
-                    }
-                }
-                ctx.busy(None);
             }
             Cmd::EnableAll => {
                 ctx.busy(Some("Включаю"));
@@ -744,7 +690,7 @@ fn first_enabled_provider(s: &Settings) -> Option<&'static str> {
 /// How much of the system has to be re-read after `cap` was flipped.
 ///
 /// The rule is "what could this switch have changed", not "how important is it":
-/// `VerifyTls`, `VpnDetect` and `BuiltinExits` write one field of `settings.json`
+/// `VerifyTls` and `VpnDetect` wrote one field of `settings.json`
 /// and nothing else, so asking Windows about scheduled tasks, NRPT rules and the
 /// user environment afterwards is two seconds of latency buying a byte-identical
 /// answer.
@@ -756,7 +702,6 @@ fn scan_after(cap: Cap) -> Scan {
         Cap::Watchdog | Cap::Dns | Cap::LocalProxy | Cap::OwnProxy | Cap::DnsRotation => {
             Scan::System
         }
-        Cap::BuiltinExits | Cap::GroupProxy => Scan::Settings,
     }
 }
 
@@ -832,13 +777,11 @@ fn settings_only_status(ctx: &Ctx, prev: Status) -> Status {
 }
 
 impl Status {
-    /// The four switches that are nothing but a field of `settings.json`, plus
+    /// The switches that are nothing but a field of `settings.json`, plus
     /// the provider list they order. Written once so `read_status` and
     /// `settings_only_status` cannot drift apart — the bug that would produce is
     /// a switch that answers differently depending on which path drew it.
     fn with_settings_switches(mut self, s: &Settings) -> Self {
-        self.builtin_exits = on_off(s.builtin_exits);
-        self.group_proxy = on_off(s.group_proxy);
         self.custom_dns_text = s.custom_dns.clone();
         self.dns_rotation = if s.rotate_providers {
             State::On
@@ -859,14 +802,6 @@ impl Status {
             })
             .collect();
         self
-    }
-}
-
-fn on_off(v: bool) -> State {
-    if v {
-        State::On
-    } else {
-        State::Off
     }
 }
 
@@ -938,8 +873,6 @@ fn read_status(ctx: &mut Ctx, deep: bool) -> Status {
         own_proxy,
         own_proxy_text,
         custom_dns_text: ctx.settings.custom_dns.clone(),
-        builtin_exits: State::Off,
-        group_proxy: State::Off,
         vpn: ctx.vpn,
         dns_rotation: State::Off,
         relay_outdated,
@@ -1321,38 +1254,6 @@ fn apply(ctx: &mut Ctx, cap: Cap, on: bool) {
                 },
             );
         }
-        (Cap::BuiltinExits, on) => {
-            ctx.settings.builtin_exits = on;
-            ctx.log(
-                Level::Ok,
-                if on {
-                    "Встроенные выходы включены."
-                } else {
-                    "Встроенные выходы отключены."
-                },
-            );
-            if on {
-                ensure_route_carrier(ctx);
-            } else {
-                release_route_carrier(ctx);
-            }
-        }
-        (Cap::GroupProxy, on) => {
-            ctx.settings.group_proxy = on;
-            ctx.log(
-                Level::Ok,
-                if on {
-                    "Прокси из группы включён."
-                } else {
-                    "Прокси из группы выключен."
-                },
-            );
-            if on {
-                ensure_route_carrier(ctx);
-            } else {
-                release_route_carrier(ctx);
-            }
-        }
     }
 }
 
@@ -1373,10 +1274,6 @@ fn enable_all(ctx: &mut Ctx) {
     if !patch_is_on(ctx) {
         apply(ctx, Cap::ClientPatch, true);
     }
-    // Nothing but a line in settings.json, so it needs nobody's permission.
-    // The service they ride on is brought up below, with DNS.
-    ctx.settings.builtin_exits = true;
-    ctx.settings.group_proxy = true;
     let dns_on =
         dns::is_nrpt_applied() && background::is_running() && !background::relay_is_outdated();
     if !dns_on {
@@ -1895,7 +1792,7 @@ fn stop_relay(ctx: &mut Ctx) {
 /// Whether something other than the DNS rules needs the relay running: the
 /// proxy listener and every route it serves live inside it.
 fn routes_want_relay(s: &Settings) -> bool {
-    s.local_proxy || s.own_proxy_enabled || s.group_proxy || s.builtin_exits
+    s.local_proxy || s.own_proxy_enabled
 }
 
 /// A route that was switched on by itself has to have something to ride on.
@@ -1957,7 +1854,7 @@ fn release_route_carrier(ctx: &mut Ctx) {
 /// `routes_want_relay` minus the proxy variable's own wish: a route's carrier
 /// sets that wish itself, so it must not count against letting go of it.
 fn routes_want_relay_without_proxy_var(s: &Settings) -> bool {
-    s.own_proxy_enabled || s.group_proxy || s.builtin_exits
+    s.own_proxy_enabled
 }
 
 /// Re-writes the NRPT rules when the pool they name has changed.
@@ -2282,16 +2179,14 @@ mod tests {
     fn a_switch_that_is_off_with_a_note_is_off() {
         let mut s = Settings::default();
         s.rotate_providers = false;
-        s.builtin_exits = false;
         let st = blank_status().with_settings_switches(&s);
 
         assert!(!st.dns_rotation.is_on());
-        assert!(!st.builtin_exits.is_on());
         // The note itself must survive — it is what the row says underneath.
         assert!(st.dns_rotation.note().is_some());
 
         let on = blank_status().with_settings_switches(&Settings::default());
-        assert!(on.dns_rotation.is_on() && on.builtin_exits.is_on());
+        assert!(on.dns_rotation.is_on());
     }
 
     /// A settings-only refresh must produce the same switches a full one does,
@@ -2310,8 +2205,6 @@ mod tests {
     /// to Windows for scheduled tasks and environment variables.
     #[test]
     fn only_the_switches_that_touch_the_system_pay_for_a_system_scan() {
-        assert_eq!(scan_after(Cap::BuiltinExits), Scan::Settings);
-        assert_eq!(scan_after(Cap::GroupProxy), Scan::Settings);
         assert_eq!(scan_after(Cap::Dns), Scan::System);
         assert_eq!(scan_after(Cap::LocalProxy), Scan::System);
         assert_eq!(scan_after(Cap::ClientPatch), Scan::Deep);
@@ -2325,8 +2218,6 @@ mod tests {
         assert!(!blank.bypass_on());
         for set in [
             |s: &mut Status| s.own_proxy = State::On,
-            |s: &mut Status| s.group_proxy = State::On,
-            |s: &mut Status| s.builtin_exits = State::On,
             |s: &mut Status| s.local_proxy = State::On,
             |s: &mut Status| s.dns = State::On,
         ] {
@@ -2342,7 +2233,7 @@ mod tests {
     fn master_off_takes_every_way_down_and_on_never_picks_the_users_proxy() {
         let off = bypass_order(false);
         assert_eq!(off.last(), Some(&Cap::Dns));
-        assert!(off.contains(&Cap::OwnProxy) && off.contains(&Cap::GroupProxy));
+        assert!(off.contains(&Cap::OwnProxy));
         assert!(!bypass_order(true).contains(&Cap::OwnProxy));
     }
 
@@ -2360,8 +2251,6 @@ mod tests {
     fn the_service_is_wanted_while_any_route_is() {
         let mut s = Settings::default();
         s.local_proxy = false;
-        s.builtin_exits = false;
-        s.group_proxy = false;
         s.own_proxy_enabled = false;
         assert!(!routes_want_relay(&s));
         s.own_proxy_enabled = true;
@@ -2418,8 +2307,6 @@ mod tests {
             dns: State::Off,
             local_proxy: State::Off,
             own_proxy: State::Off,
-            builtin_exits: State::Off,
-            group_proxy: State::Off,
             dns_rotation: State::Off,
             vpn: None,
             own_proxy_text: String::new(),

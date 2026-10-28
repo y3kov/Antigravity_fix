@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod asar;
-mod auth;
 mod background;
 mod canary;
 mod dns;
@@ -175,7 +174,7 @@ fn standard_install_candidates() -> Vec<PathBuf> {
     let prog_files = env::var("PROGRAMFILES").unwrap_or_default();
     let prog_files_x86 = env::var("PROGRAMFILES(X86)").unwrap_or_default();
 
-    vec![
+    let mut v = vec![
         PathBuf::from(&local_appdata)
             .join("Programs")
             .join("Antigravity"),
@@ -190,7 +189,13 @@ fn standard_install_candidates() -> Vec<PathBuf> {
         PathBuf::from(&local_appdata).join("Antigravity IDE"),
         PathBuf::from(&local_appdata).join("agy").join("bin"),
         PathBuf::from(&local_appdata).join("agy"),
-    ]
+    ];
+    // The `agy` IDE 2.6+ downloads and runs (`patch_binary::ide_shared_agy`).
+    // Last, so the CLI row keeps showing the standalone CLI when both exist.
+    if let Some(home) = patch_binary::home_dir() {
+        v.push(patch_binary::shared_agy_dir(&home));
+    }
+    v
 }
 
 /// The Linux equivalents. Antigravity ships as an Electron/VS Code fork, which on
@@ -228,6 +233,10 @@ fn standard_install_candidates() -> Vec<PathBuf> {
         v.push(h.join(".agy/bin"));
         v.push(h.join(".agy"));
         v.push(h.join(".local/share/agy/bin"));
+        // The `agy` IDE 2.6+ downloads and runs. Listed on its own as well as
+        // through the IDE: a root-owned IDE is left to pkexec, which runs with
+        // root's home, so only this entry keeps the user's copy patched.
+        v.push(patch_binary::shared_agy_dir(&h));
     }
     v
 }

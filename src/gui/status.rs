@@ -20,7 +20,7 @@
 use std::time::Duration;
 
 use crate::gate::View;
-use crate::ops::{Cap, Status};
+use crate::ops::{Cap, State, Status};
 
 /// How the card is coloured, and how loud it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +87,9 @@ pub struct Facts {
     pub installs_found: bool,
     /// The account patch is on everywhere it can be.
     pub patch_on: bool,
+    /// On some installs and not others - the switch reads on, so only the card
+    /// can offer to finish it (an IDE updated to 2.6 beside a patched CLI).
+    pub patch_partial: bool,
     /// The 400 bypass is on: its DNS half, which everything else rides on - the
     /// local proxy lives in the same service, and the loopback door only opens
     /// once the relay answers the gate hosts.
@@ -212,7 +215,11 @@ impl Facts {
         Facts {
             admin: s.admin || !cfg!(target_os = "windows"),
             installs_found: s.installs.iter().any(|r| r.path.is_some()),
-            patch_on: s.client_patch.is_on(),
+            // `== On`, not `is_on()`: that one is true for `Partial` too, and then
+            // a half-patched machine had neither a switch to flip on nor a card
+            // offering «Включить всё».
+            patch_on: s.client_patch == State::On,
+            patch_partial: matches!(s.client_patch, State::Partial(_)),
             bypass_on: s.bypass_on(),
             relay_running: s.relay_running,
             relay_outdated: s.relay_outdated,
@@ -283,16 +290,6 @@ pub fn switch_text(cap: Cap) -> (&'static str, &'static str) {
             "Соединения Antigravity с этими двумя серверами идут через посредника внутри \
              вашего компьютера: он выбирает путь, который реально работает, и переключается \
              сам. Содержимое не расшифровывается — посредник только передаёт байты.",
-        ),
-        Cap::BuiltinExits => (
-            "Встроенные выходы",
-            // Deliberately says what they are and never which they are: a
-            // free service that gets named publicly stops being free (I46).
-            "Запасной путь до серверов Google — через страну без ограничений.",
-        ),
-        Cap::GroupProxy => (
-            "Прокси из группы",
-            "Выделенный сервер группы: через него идут только запросы к моделям.",
         ),
         Cap::OwnProxy => (
             "Свой HTTP-прокси",
@@ -516,6 +513,7 @@ pub fn headline(f: &Facts) -> Headline {
 
     if !f.patch_on || !f.bypass_on {
         let what = match (f.patch_on, f.bypass_on) {
+            (false, true) if f.patch_partial => "Разблокировка входа стоит не на всех установках.",
             (false, false) => "Разблокировка входа и обход ошибки 400 выключены.",
             (false, true) => "Разблокировка входа выключена.",
             _ => "Обход ошибки 400 выключен.",
@@ -883,6 +881,21 @@ mod tests {
         let h = headline(&f);
         assert_eq!(h.action, Some(Action::EnableAll));
         assert!(!h.detail.contains("закроется"), "{}", h.detail);
+    }
+
+    /// A patched CLI beside an unpatched IDE: the switch reads on, so the card is
+    /// the only way to finish the patch - and it needs no admin rights.
+    #[test]
+    fn a_partial_patch_offers_to_finish_it_even_without_admin() {
+        let f = Facts {
+            admin: false,
+            patch_on: false,
+            patch_partial: true,
+            ..working()
+        };
+        let h = headline(&f);
+        assert_eq!(h.action, Some(Action::EnableAll));
+        assert!(h.detail.contains("не на всех"), "{}", h.detail);
     }
 
     #[test]

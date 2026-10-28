@@ -60,9 +60,9 @@ fn install_font(ctx: &egui::Context) {
         name.to_string(),
         std::sync::Arc::new(egui::FontData::from_owned(bytes)),
     );
-    // Proportional only. Segoe UI is not a monospaced face, and the two places
-    // that ask for one — the licence key field and the install paths — are
-    // exactly the places where columns lining up is the point.
+    // Proportional only. Segoe UI is not a monospaced face, and the place that
+    // asks for one — the install paths — is exactly where columns lining up
+    // is the point.
     fonts
         .families
         .entry(egui::FontFamily::Proportional)

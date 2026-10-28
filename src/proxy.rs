@@ -642,12 +642,9 @@ fn vpn_usable() -> bool {
 pub fn route_usable(kind: routes::Kind, host: &str) -> bool {
     match kind {
         routes::Kind::Own => upstream::available(),
-        routes::Kind::Group => crate::settings::group_proxy_enabled() && crate::group::available(),
-        // The window's switch, checked at the one place the route is offered
-        // from. Off means the route is simply not usable, which the table
-        // already knows how to deal with - it is the same answer an exit that
-        // failed its probe gives.
-        routes::Kind::Exits => crate::settings::builtin_exits_enabled() && exits_available(),
+        // Both removed from this build. Never usable is the answer the table
+        // already handles - an exit that failed its probe gives the same.
+        routes::Kind::Group | routes::Kind::Exits => false,
         routes::Kind::Relay => relay_usable(),
         routes::Kind::Direct => direct_usable(host),
         routes::Kind::Vpn => vpn_usable(),
@@ -668,16 +665,6 @@ fn direct_usable(host: &str) -> bool {
         crate::resolvers::served_verdict(host),
         Some(crate::resolvers::Verdict::Passthrough) | Some(crate::resolvers::Verdict::Sibling)
     )
-}
-
-#[cfg(exits)]
-fn exits_available() -> bool {
-    exits::available()
-}
-
-#[cfg(not(exits))]
-fn exits_available() -> bool {
-    false
 }
 
 #[cfg(relay)]

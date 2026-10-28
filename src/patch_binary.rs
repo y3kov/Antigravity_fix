@@ -391,6 +391,10 @@ pub fn binary_targets(inst: &Path) -> Vec<PathBuf> {
         ext_bin.join("language_server.exe"),
     ];
 
+    if let Some(agy) = ide_shared_agy(inst, home_dir()) {
+        targets.push(agy);
+    }
+
     // Any other `language_server*` in the two bin dirs - catches the Linux/macOS
     // platform-suffixed names (`language_server_linux_x64`, `..._darwin_arm64`, …)
     // without pinning the exact spelling.
@@ -428,6 +432,45 @@ pub fn binary_targets(inst: &Path) -> Vec<PathBuf> {
 
     targets.dedup();
     targets
+}
+
+/// The user's home: `%USERPROFILE%` on Windows, `$HOME` elsewhere.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Where the IDE keeps the `agy` it runs: `~/.gemini/bin`, per user.
+pub(crate) fn shared_agy_dir(home: &Path) -> PathBuf {
+    home.join(".gemini").join("bin")
+}
+
+/// The language server of an IDE 2.6+ install, which is not inside the install.
+///
+/// 2.6.0 dropped the bundled `extensions/antigravity` (and the
+/// `language_server_windows_x64.exe` in its `bin`). The extension that replaced
+/// it, `extensions/agy`, starts `agy --hub` as its backend and downloads that
+/// binary itself into `~/.gemini/bin`, updating it there in place. Measured on
+/// 2.6.0: nothing in the install dir carries the signature, the `agy` there
+/// does. So for an install with the new extension, that file is one of its
+/// targets, or the IDE runs unpatched while its row has nothing to show.
+///
+/// Patching in place is safe for the extension: it checks the download's hash
+/// once, and a later size/mtime/inode mismatch with its `agy.version.json` only
+/// makes it re-ask `agy --version`, which the same-length rename leaves intact.
+fn ide_shared_agy(inst: &Path, home: Option<PathBuf>) -> Option<PathBuf> {
+    let new_ext = inst
+        .join("resources")
+        .join("app")
+        .join("extensions")
+        .join("agy");
+    if !new_ext.is_dir() {
+        return None;
+    }
+    let name = if cfg!(target_os = "windows") { "agy.exe" } else { "agy" };
+    Some(shared_agy_dir(&home?).join(name))
 }
 
 /// Closes Antigravity before a patch run.
@@ -816,6 +859,28 @@ mod tests {
         }
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// IDE 2.6+ (`extensions/agy`) runs the `agy` in `~/.gemini/bin`; an older
+    /// IDE, or a home that is not known, adds nothing.
+    #[test]
+    fn an_ide_with_the_agy_extension_targets_the_shared_agy() {
+        let inst = std::env::temp_dir().join("ag_ide_shared_agy");
+        let home = PathBuf::from("home");
+        let ext = inst.join("resources").join("app").join("extensions");
+        fs::create_dir_all(ext.join("antigravity")).unwrap();
+
+        assert_eq!(ide_shared_agy(&inst, Some(home.clone())), None, "pre-2.6 IDE");
+
+        fs::create_dir_all(ext.join("agy")).unwrap();
+        let name = if cfg!(target_os = "windows") { "agy.exe" } else { "agy" };
+        assert_eq!(
+            ide_shared_agy(&inst, Some(home.clone())),
+            Some(home.join(".gemini").join("bin").join(name))
+        );
+        assert_eq!(ide_shared_agy(&inst, None), None, "no home");
+
+        fs::remove_dir_all(&inst).ok();
     }
 
     /// End-to-end check against the installed Language Server: patch a copy,

@@ -674,7 +674,6 @@ fn warm_forever() {
         // route working at all.
         if since_exits >= PROBE_HEALTHY_EVERY {
             proxy::probe_exits();
-            crate::group::probe_health();
             since_exits = Duration::ZERO;
         }
         // The direct route is timed on the same clock as the others, so the

@@ -42,12 +42,6 @@ pub struct Settings {
     #[serde(default)]
     pub group_key: String,
 
-    /// The licence key this machine last had accepted. Kept so a restart or an
-    /// `_N` update starts straight on the main screen; a key for another 3-digit
-    /// version fails `auth::verify_key` and the licence screen comes back.
-    #[serde(default)]
-    pub license_key: String,
-
     /// When the group code and the user's own proxy were last set (unix
     /// seconds, 0 = never). The one added later goes first in the route table
     /// (owner, 2026-10-05).
@@ -77,6 +71,9 @@ pub struct Settings {
     /// on when any of its parts is, which keeps one truth instead of two.
     pub dns: bool,
     pub local_proxy: bool,
+    /// The built-in exits and the group proxy, both removed from this build.
+    /// Always written false, so an older build reading the file does not
+    /// switch them back on.
     pub builtin_exits: bool,
     pub group_proxy: bool,
 
@@ -151,15 +148,14 @@ impl Default for Settings {
             client_patch: false,
             auto_patch: true,
             group_key: String::new(),
-            license_key: String::new(),
             group_key_at: 0,
             own_proxy_at: 0,
             patch_declined: false,
             decline_unrecorded: false,
             dns: true,
             local_proxy: true,
-            builtin_exits: true,
-            group_proxy: true,
+            builtin_exits: false,
+            group_proxy: false,
             debug_route: String::new(),
             disabled_providers: Vec::new(),
             custom_dns: String::new(),
@@ -279,6 +275,8 @@ fn parse(text: &str) -> Option<Settings> {
         serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
     let unrecorded = value.get("patch_declined").is_none();
     let mut s: Settings = serde_json::from_value(value).ok()?;
+    s.builtin_exits = false;
+    s.group_proxy = false;
     if unrecorded {
         s.patch_declined = !s.client_patch;
         s.decline_unrecorded = true;
@@ -432,15 +430,6 @@ pub fn local_proxy_wanted() -> bool {
     cached().local_proxy
 }
 
-/// Whether the built-in permitted-region exits may be used as a route.
-///
-/// Defaults to on: a missing settings file means a machine that never opened the
-/// window (the relay's first start races the first save), and the route being
-/// there is the shipped behaviour.
-pub fn group_proxy_enabled() -> bool {
-    cached().group_proxy
-}
-
 /// The user's own proxy was set after the group code, so it goes first.
 pub fn own_proxy_first() -> bool {
     let c = cached();
@@ -455,10 +444,6 @@ pub fn debug_route() -> String {
     cached().debug_route.clone()
 }
 
-pub fn builtin_exits_enabled() -> bool {
-    cached().builtin_exits
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,7 +453,8 @@ mod tests {
         // Nothing has been written in a test process, so this exercises the
         // "first run" path that every new user takes.
         let s = Settings::default();
-        assert!(s.dns && s.local_proxy && s.builtin_exits && s.group_proxy && s.auto_patch);
+        assert!(s.dns && s.local_proxy && s.auto_patch);
+        assert!(!s.builtin_exits && !s.group_proxy && !s.own_proxy_enabled);
         assert!(s.rotate_providers, "the pool races by default");
         assert!(
             !s.client_patch,

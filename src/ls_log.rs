@@ -410,19 +410,21 @@ pub fn candidate_logs() -> Vec<PathBuf> {
             }
         }
     }
-    if let Some(cli) = newest_cli_log() {
-        out.push(cli);
+    // The standalone CLI logs under `antigravity-cli`; the `agy --hub` IDE 2.6+
+    // runs is started with `--app_data_dir=antigravity` and logs under that, in
+    // the same `cli-*.log` shape (measured on 2.6.0).
+    for app_dir in ["antigravity-cli", "antigravity"] {
+        if let Some(cli) = newest_cli_log(app_dir) {
+            out.push(cli);
+        }
     }
     out
 }
 
-/// The CLI's current session log: the newest `cli-*.log`.
-fn newest_cli_log() -> Option<PathBuf> {
+/// One `agy` app dir's current session log: the newest `cli-*.log`.
+fn newest_cli_log(app_dir: &str) -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    let dir = PathBuf::from(home)
-        .join(".gemini")
-        .join("antigravity-cli")
-        .join("log");
+    let dir = PathBuf::from(home).join(".gemini").join(app_dir).join("log");
     fs::read_dir(dir)
         .ok()?
         .flatten()
